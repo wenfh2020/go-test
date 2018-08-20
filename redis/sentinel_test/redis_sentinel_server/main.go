@@ -9,7 +9,9 @@ import (
 )
 
 const (
-	REDIS_ADDR = "127.0.0.1:26379" //redis addr
+	MASTER_NAME     = "mymaster"
+	SENTINEL_ADDR_1 = "127.0.0.1:26379"
+	SENTINEL_ADDR_2 = "127.0.0.1:26380"
 )
 
 func InitSentinel(arrHost []string, strMasterName string) (p *Sentinel, err error) {
@@ -17,34 +19,32 @@ func InitSentinel(arrHost []string, strMasterName string) (p *Sentinel, err erro
 		Addrs:      arrHost,
 		MasterName: strMasterName,
 		Dial: func(strAddr string) (redis.Conn, error) {
-			timeout := 500 * time.Millisecond
-			c, err := redis.DialTimeout("tcp", strAddr, timeout, timeout, timeout)
+			iTime := 500 * time.Millisecond
+			c, err := redis.DialTimeout("tcp", strAddr, iTime, iTime, iTime)
 			if err != nil {
 				return nil, err
 
 			}
 			return c, nil
-
 		},
 	}
 	return p, nil
 }
 
 func main() {
-	go func() {
-		strMasterName := "mymaster"
-		arrHost := []string{"127.0.0.1:26380", "127.0.0.1:26379"}
-		pSentinel, err := InitSentinel(arrHost, strMasterName)
-		if err != nil {
-			log.Error(err)
-			return
-		}
+	arrHost := []string{SENTINEL_ADDR_1, SENTINEL_ADDR_2}
+	pSentinel, err := InitSentinel(arrHost, MASTER_NAME)
+	if err != nil {
+		log.Error(err)
+		return
+	}
 
+	go func() {
 		for {
 			time.Sleep(3 * time.Second)
 
 			pSentinel.Discover()
-			log.Info("sentinels: %v", pSentinel.Addrs)
+			log.Info("--\nsentinels: %v", pSentinel.Addrs)
 
 			strMasterAddr, err := pSentinel.MasterAddr()
 			if err != nil {
