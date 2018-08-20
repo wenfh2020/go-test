@@ -46,6 +46,16 @@ func main() {
 			pSentinel.Discover()
 			log.Info("--\nsentinels: %v", pSentinel.Addrs)
 
+			arrMasters, err := pSentinel.Masters()
+			if err != nil {
+				log.Error(err)
+				continue
+			}
+
+			for i, v := range arrMasters {
+				log.Info("masters: %d, %v", i, v)
+			}
+
 			strMasterAddr, err := pSentinel.MasterAddr()
 			if err != nil {
 				log.Error(err)

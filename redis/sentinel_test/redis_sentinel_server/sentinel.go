@@ -249,6 +249,19 @@ func (s *Sentinel) MasterAddr() (string, error) {
 	return res.(string), nil
 }
 
+//Masters returns a slice with all master's info.
+func (s *Sentinel) Masters() ([]*Master, error) {
+	res, err := s.doUntilSuccess(func(c redis.Conn) (interface{}, error) {
+		return queryForMasters(c)
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return res.([]*Master), nil
+}
+
 // SlaveAddrs returns a slice with known slave addresses of current master instance.
 func (s *Sentinel) SlaveAddrs() ([]string, error) {
 	res, err := s.doUntilSuccess(func(c redis.Conn) (interface{}, error) {
@@ -258,6 +271,26 @@ func (s *Sentinel) SlaveAddrs() ([]string, error) {
 		return nil, err
 	}
 	return res.([]string), nil
+}
+
+//masters known by Sentinel
+type Master struct {
+	name  string
+	ip    string
+	port  string
+	flags string
+}
+
+func (m *Master) Addr() string {
+	return net.JoinHostPort(m.ip, m.port)
+}
+
+func (m *Master) Name() string {
+	return m.name
+}
+
+func (m *Master) Available() bool {
+	return !strings.Contains(m.flags, "disconnected") && !strings.Contains(m.flags, "s_down")
 }
 
 // Slave represents a Redis slave instance which is known by Sentinel.
@@ -365,6 +398,32 @@ func queryForMaster(conn redis.Conn, masterName string) (string, error) {
 	}
 	masterAddr := net.JoinHostPort(res[0], res[1])
 	return masterAddr, nil
+}
+
+func queryForMasters(conn redis.Conn) ([]*Master, error) {
+	res, err := redis.Values(conn.Do("SENTINEL", "masters"))
+	if err != nil {
+		return nil, err
+	}
+
+	masters := make([]*Master, 0)
+	for _, a := range res {
+		sm, err := redis.StringMap(a, err)
+		if err != nil {
+			return masters, err
+		}
+
+		master := &Master{
+			name:  sm["name"],
+			ip:    sm["ip"],
+			port:  sm["port"],
+			flags: sm["flags"],
+		}
+
+		masters = append(masters, master)
+	}
+
+	return masters, nil
 }
 
 func queryForSlaveAddrs(conn redis.Conn, masterName string) ([]string, error) {
