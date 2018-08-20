@@ -12,7 +12,6 @@ const (
 	Ver = "0.2"
 )
 
-//初始化系统信号事件处理
 func InitSignal() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT, syscall.SIGSTOP)
