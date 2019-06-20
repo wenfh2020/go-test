@@ -21,7 +21,7 @@ import (
 var (
 	errInvalidPath           = errors.New("invalid path")
 	errConfigCenterNotInited = errors.New("config center not inited")
-	defaultLocalCacheDir     = "/usr/local/vntop/config_center/local_cache"
+	defaultLocalCacheDir     = "/usr/local/test/config_center/local_cache"
 	connTimeOut              = 8 * time.Second //zk conn timeout
 )
 
