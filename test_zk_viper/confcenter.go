@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -31,7 +32,7 @@ type ConfigModule struct {
 	localCacheDir string       //dir where cache all config files
 	localDir      string       //local config dir
 	filePath      string       //config file path
-	prevCfgBuf    string       //config buf get from zk last time
+	prevCfgBuf    []byte       //config buf get from zk last time
 	config        *viper.Viper // config obj ptr
 }
 
@@ -40,56 +41,73 @@ func (m *ConfigModule) loadFromBuf(buf []byte) error {
 	fmt.Println("ConfigModule::loadFromBuf...")
 
 	// check same content
-	if m.prevCfgBuf == string(buf) {
+	if reflect.DeepEqual(m.prevCfgBuf, buf) {
 		fmt.Println("no need to update...")
 		return nil
 	}
 
-	// create temp file
-	file, err := ioutil.TempFile(m.localDir, "tmp")
-	if err != nil {
-		fmt.Println("create tmp file tmp", err)
-		return err
-	}
-	defer file.Close()
+	equal := false
 
-	file.Write(buf)
+	// check local to remote
+	if pathExists(m.filePath) {
+		data, err := ioutil.ReadFile(m.filePath)
+		if err != nil {
+			fmt.Println(err)
+			return nil
+		}
 
-	// add ext to temp file
-	dir, filename := path.Split(file.Name())
-	tempPath := path.Join(dir, filename+path.Ext(m.filePath))
-	if err = os.Rename(file.Name(), tempPath); err != nil {
-		fmt.Println("rename file fail", err, file.Name(), tempPath)
-		return err
+		if reflect.DeepEqual(data, buf) {
+			equal = true
+		}
 	}
 
-	// check content
-	v := viper.New()
-	v.SetConfigFile(tempPath)
-	if err = v.ReadInConfig(); err != nil {
-		fmt.Println(err)
-		return err
-	}
+	if !equal {
+		// create temp file
+		file, err := ioutil.TempFile(m.localDir, "tmp")
+		if err != nil {
+			fmt.Println("create tmp file tmp", err)
+			return err
+		}
+		defer file.Close()
 
-	// replace old config
-	if err = os.Rename(tempPath, m.filePath); err != nil {
-		fmt.Println("rename file fail", err, tempPath, m.filePath)
-		return err
+		file.Write(buf)
+
+		// add ext to temp file
+		dir, filename := path.Split(file.Name())
+		tempPath := path.Join(dir, filename+path.Ext(m.filePath))
+		if err = os.Rename(file.Name(), tempPath); err != nil {
+			fmt.Println("rename file fail", err, file.Name(), tempPath)
+			return err
+		}
+
+		// check content
+		v := viper.New()
+		v.SetConfigFile(tempPath)
+		if err = v.ReadInConfig(); err != nil {
+			fmt.Println(err)
+			return err
+		}
+
+		// replace old config
+		if err = os.Rename(tempPath, m.filePath); err != nil {
+			fmt.Println("rename file fail", err, tempPath, m.filePath)
+			return err
+		}
 	}
 
 	m.config.SetConfigFile(m.filePath)
-	if err = m.config.ReadInConfig(); err != nil {
+	if err := m.config.ReadInConfig(); err != nil {
 		fmt.Println(err)
 		return err
 	}
 
 	fmt.Println("update config success", m.filePath)
-	m.prevCfgBuf = string(buf)
+	m.prevCfgBuf = buf
 	return nil
 }
 
-// PathExists check path
-func PathExists(path string) bool {
+// pathExists check path
+func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	if err != nil {
 		if os.IsExist(err) {
@@ -119,7 +137,7 @@ func initConfigModule(mPath, cacheDir string) (config *ConfigModule, err error) 
 
 	// check and create dir
 	dir, _ := path.Split(p)
-	if !PathExists(dir) {
+	if !pathExists(dir) {
 		if err = os.MkdirAll(dir, os.ModePerm); err != nil {
 			fmt.Println("mkdir fail", dir, err)
 			return nil, err
