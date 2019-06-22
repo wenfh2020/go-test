@@ -175,12 +175,11 @@ type ConfigCenter struct {
 var configCenter *ConfigCenter
 
 // InitConfigCenter init config center
-func InitConfigCenter() *ConfigCenter {
+func InitConfigCenter() {
 	configCenter = &ConfigCenter{
 		mutex:     &sync.Mutex{},
 		configMap: make(map[string]*ConfigModule),
 	}
-	return configCenter
 }
 
 func (c *ConfigCenter) getZkHosts() []string {
