@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"go-test/common"
 	"os"
 )
 
@@ -18,5 +19,11 @@ func main() {
 	switch module {
 	case "map":
 		testMapLogic()
+	case "interface":
+		testInterfaceLogic()
+	case "go":
+		common.InitSignal()
+	default:
+		fmt.Println("not have test module:", module)
 	}
 }
