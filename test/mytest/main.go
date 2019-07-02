@@ -8,22 +8,39 @@ import (
 
 // go run *.go map
 
-func main() {
+func parseArgs() (string, bool) {
 	args := os.Args
 	if args == nil || len(args) <= 1 {
 		fmt.Println("pls input test module")
-		return
+		return "", false
 	}
 	module := args[1]
+	fmt.Printf("test module: %v\n====================\n", module)
+	return module, true
+}
+
+func main() {
+	module, ok := parseArgs()
+	if !ok {
+		return
+	}
 
 	switch module {
 	case "map":
-		testMapLogic()
+		go testMapLogic()
 	case "interface":
-		testInterfaceLogic()
+		go testInterfaceLogic()
 	case "go":
 		common.InitSignal()
+	case "other":
+		go testOther()
+	case "chanel":
+		go testChanelLogic()
+	case "slice":
+		go testSliceLoic()
 	default:
 		fmt.Println("not have test module:", module)
 	}
+
+	common.InitSignal()
 }
