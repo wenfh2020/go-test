@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -96,10 +97,40 @@ func testCacheChanel() {
 	fmt.Println("testCacheChanel end...")
 }
 
+var wait sync.WaitGroup
+
+const (
+	chSize   = 50000
+	msgCount = 1000000
+)
+
+// 设置缓冲的队列，限制协程的增长速度
+func testPressure() {
+	fmt.Println("*testPressure...")
+
+	chs := make(chan int, chSize)
+	wait.Add(msgCount)
+
+	for i := 0; i < msgCount; i++ {
+		chs <- 1
+		go func(k int) {
+			fmt.Println("test produce", k)
+			time.Sleep(time.Millisecond)
+			wait.Done()
+			<-chs
+		}(i)
+	}
+
+	wait.Wait()
+	close(chs)
+	fmt.Println("test pressure end...")
+}
+
 func testChanelLogic() {
 	fmt.Println("*testChanelLogic...")
 
 	// testTimeoutFunc()
 	// testCloseChanel()
-	testCacheChanel()
+	// testCacheChanel()
+	testPressure()
 }
