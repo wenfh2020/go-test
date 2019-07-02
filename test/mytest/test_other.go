@@ -4,12 +4,6 @@ import (
 	"fmt"
 )
 
-/*
-数组形参是数据拷贝
-slice, map 形参传递是对象拷贝，但是新参数对象与实参对象会指向同一个数据。
-但是，形参在函数内部可能会发生内存变动，形参和实参同步的话，参数最好填指针。
-*/
-
 // FIEO
 func testRecover() {
 	fmt.Println("*testRecover...")
