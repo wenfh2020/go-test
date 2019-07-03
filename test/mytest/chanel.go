@@ -134,3 +134,10 @@ func testChanelLogic() {
 	// testCacheChanel()
 	testPressure()
 }
+
+func main {
+	// testTimeoutFunc()
+	// testCloseChanel()
+	// testCacheChanel()
+	testPressure()
+}
