@@ -41,7 +41,3 @@ func testInterfaceLogic() {
 	p = new(XPhone)
 	fmt.Println(p.call())
 }
-
-func main () {
-	testInterfaceLogic()
-}

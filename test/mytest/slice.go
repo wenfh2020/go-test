@@ -46,13 +46,9 @@ func testSlice() {
 	fmt.Printf("2 slice: %v, ptr: %p, len: %d, cap: %d\n", s, &s, len(s), cap(s))
 }
 
-func testSliceLoic() {
+func testSliceLogic() {
 	fmt.Println("*testOther...")
 
 	// testArray()
 	testSlice()
-}
-
-func main () {
-	testSliceLoic()
 }

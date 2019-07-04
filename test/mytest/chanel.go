@@ -15,7 +15,7 @@ func testChanel(ch chan int) {
 	fmt.Println("*testChanel...")
 	i := <-ch
 	fmt.Println("get", i)
-} 
+}
 
 func test(w, q chan int) {
 	for {
@@ -129,13 +129,6 @@ func testPressure() {
 func testChanelLogic() {
 	fmt.Println("*testChanelLogic...")
 
-	// testTimeoutFunc()
-	// testCloseChanel()
-	// testCacheChanel()
-	testPressure()
-}
-
-func main () {
 	// testTimeoutFunc()
 	// testCloseChanel()
 	// testCacheChanel()
