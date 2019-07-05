@@ -52,3 +52,7 @@ func testMapLogic() {
 	testUpdateMap()
 	// testSafe()
 }
+
+func main() {
+	testMapLogic()
+}

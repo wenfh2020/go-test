@@ -63,3 +63,7 @@ func testOther() {
 	// var arr [10]int
 	// testArray()
 }
+
+func main() {
+	testOther()
+}

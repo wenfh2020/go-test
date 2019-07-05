@@ -52,3 +52,7 @@ func testSliceLogic() {
 	// testArray()
 	testSlice()
 }
+
+func main() {
+	testSliceLogic()
+}

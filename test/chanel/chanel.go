@@ -134,3 +134,7 @@ func testChanelLogic() {
 	// testCacheChanel()
 	testPressure()
 }
+
+func main() {
+	testChanelLogic()
+}
