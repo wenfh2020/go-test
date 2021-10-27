@@ -111,6 +111,7 @@ func testPressure() {
 	chs := make(chan int, chSize)
 	wait.Add(msgCount)
 
+	fmt.Println("begin time:", oOldTime.Format(TIME_FOMAT))
 	for i := 0; i < msgCount; i++ {
 		chs <- 1
 		go func(k int) {
