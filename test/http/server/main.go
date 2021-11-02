@@ -1,3 +1,5 @@
+/* https://studygolang.com/articles/14947?utm_medium=referral */
+
 package main
 
 import (
