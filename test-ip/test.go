@@ -1,8 +1,7 @@
-// fixed_proxy_server.go
+// fixed_demo_server.go
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -39,38 +38,46 @@ func handleConnection(conn net.Conn) {
 		fmt.Printf("连接关闭: %s\n\n", conn.RemoteAddr())
 	}()
 
-	// 不设置超时，等待代理协议头
-	realIP, isProxy, remainingData := detectProxyProtocol(conn)
+	// 解析代理协议获取真实IP
+	realIP, isProxy, bufferData := parseProxyProtocol(conn)
+
+	// 提取纯IP（去掉端口）
+	cleanIP := extractIP(realIP)
 
 	fmt.Printf("\n" + strings.Repeat("=", 60) + "\n")
 	fmt.Printf("📡 新连接建立\n")
 	fmt.Printf("   连接地址: %s\n", conn.RemoteAddr())
-	fmt.Printf("   真实IP:   %s\n", realIP)
+	fmt.Printf("   真实IP:   %s\n", cleanIP)
 	fmt.Printf("   代理协议: %v\n", isProxy)
-	fmt.Printf("   剩余数据: %d 字节\n", len(remainingData))
+	fmt.Printf("   缓冲数据: %d 字节\n", len(bufferData))
 
-	if len(remainingData) > 0 {
-		fmt.Printf("   剩余数据(hex): %x\n", remainingData)
+	if len(bufferData) > 0 {
+		fmt.Printf("   缓冲数据(hex): %x\n", bufferData)
+		fmt.Printf("   缓冲数据(ascii): %q\n", string(bufferData))
 	}
 	fmt.Printf(strings.Repeat("-", 60) + "\n")
 
-	// 如果有剩余数据，先处理
-	if len(remainingData) > 0 {
-		fmt.Printf("处理剩余数据: %q\n", string(remainingData))
-		conn.Write([]byte(fmt.Sprintf("收到缓冲数据: %q\n", string(remainingData))))
-	}
-
 	// 发送欢迎消息
-	welcome := fmt.Sprintf("欢迎! 真实IP: %s, 代理协议: %v\n", realIP, isProxy)
+	welcome := fmt.Sprintf("欢迎! 连接地址: %s\n真实IP: %s\n代理协议: %v\n\n",
+		conn.RemoteAddr(), cleanIP, isProxy)
 	conn.Write([]byte(welcome))
+
+	// 如果有缓冲数据，先处理
+	if len(bufferData) > 0 {
+		fmt.Printf("处理缓冲数据: %q\n", string(bufferData))
+		conn.Write([]byte(fmt.Sprintf("缓冲数据: %q\n", string(bufferData))))
+	}
 
 	// 循环读取数据
 	buf := make([]byte, 1024)
 	for {
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		n, err := conn.Read(buf)
 		if err != nil {
 			if err == io.EOF {
-				fmt.Printf("客户端断开: %s\n", realIP)
+				fmt.Printf("客户端断开: %s\n", cleanIP)
+			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				fmt.Printf("读取超时: %s\n", cleanIP)
 			} else {
 				fmt.Printf("读取错误: %v\n", err)
 			}
@@ -79,101 +86,192 @@ func handleConnection(conn net.Conn) {
 
 		if n > 0 {
 			data := buf[:n]
-			fmt.Printf("收到数据[%s]: %q (hex: %x)\n", realIP, string(data), data)
+			fmt.Printf("收到数据[%s]: %q (hex: %x)\n", cleanIP, string(data), data)
 			conn.Write([]byte(fmt.Sprintf("回显: %s", data)))
 		}
 	}
 }
 
-// 检测代理协议 - 关键修复版本
-func detectProxyProtocol(conn net.Conn) (realIP string, isProxy bool, remainingData []byte) {
+// parseProxyProtocol 正确解析代理协议
+func parseProxyProtocol(conn net.Conn) (realIP string, isProxy bool, bufferData []byte) {
 	// 代理协议v2签名
 	proxySignature := []byte{0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A}
 
-	// 重要：使用 Peek 的方式读取，而不是直接 Read
-	// 因为我们需要先检查数据，但不一定消费
+	// 重要：使用 io.ReadAtLeast 确保读取足够的数据
+	buf := make([]byte, 16) // 先读16字节查看
 
-	// 方法1：先读取少量数据检查
-	buffer := make([]byte, 16) // 先读16字节
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, err := conn.Read(buffer)
-	conn.SetReadDeadline(time.Time{}) // 清除超时
+	// 设置短超时，避免阻塞
+	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	n, err := io.ReadAtLeast(conn, buf, 12) // 至少读12字节检查签名
+	conn.SetReadDeadline(time.Time{})       // 清除超时
 
-	if err != nil || n < 12 {
-		// 读取失败或数据不足
+	if err != nil {
+		// 读取失败，可能不是代理协议
 		if n > 0 {
-			return conn.RemoteAddr().String(), false, buffer[:n]
+			return conn.RemoteAddr().String(), false, buf[:n]
 		}
 		return conn.RemoteAddr().String(), false, nil
 	}
 
-	// 检查是否是代理协议
-	if n >= 12 && bytes.Equal(buffer[:12], proxySignature) {
-		fmt.Println("✅ 检测到代理协议签名!")
+	// 检查签名
+	if n >= 12 {
+		// 打印前12字节用于调试
+		fmt.Printf("前12字节(hex): ")
+		for i := 0; i < 12 && i < n; i++ {
+			fmt.Printf("%02x ", buf[i])
+		}
+		fmt.Println()
 
-		// 继续读取完整头部
-		// 头部总长度 = 12(签名) + 2(版本命令) + 2(地址长度) + 地址数据
-
-		// 如果已经读取了16字节，还需要解析地址长度
-		if n >= 16 {
-			addrLen := binary.BigEndian.Uint16(buffer[14:16])
-			totalHeaderLen := 16 + int(addrLen)
-
-			// 读取剩余头部数据
-			headerData := make([]byte, totalHeaderLen)
-			copy(headerData[:n], buffer[:n])
-
-			// 读取剩余部分
-			for n < totalHeaderLen {
-				readMore, err := conn.Read(headerData[n:totalHeaderLen])
-				if err != nil {
-					fmt.Printf("读取代理协议头错误: %v\n", err)
-					return conn.RemoteAddr().String(), true, nil
-				}
-				n += readMore
-			}
-
-			// 解析真实IP
-			realIP := parseProxyHeader(headerData)
-			if realIP != "" {
-				return realIP, true, nil
+		// 比较签名
+		match := true
+		for i := 0; i < 12; i++ {
+			if buf[i] != proxySignature[i] {
+				match = false
+				break
 			}
 		}
 
-		return conn.RemoteAddr().String(), true, nil
+		if match {
+			fmt.Println("✅ 检测到代理协议v2签名")
+
+			// 继续读取完整的代理协议头
+			// 头部结构: 12签名 + 2版本/命令 + 2地址长度 + 地址数据
+
+			// 如果已经读了16字节，但还需要更多数据
+			if n < 16 {
+				// 读取剩下的2字节（版本/命令之后的部分）
+				remaining := make([]byte, 16-n)
+				_, err := io.ReadFull(conn, remaining)
+				if err != nil {
+					return conn.RemoteAddr().String(), true, buf[:n]
+				}
+				buf = append(buf[:n], remaining...)
+				n = 16
+			}
+
+			// 现在应该有至少16字节
+			if n >= 16 {
+				// 解析地址长度（在位置14-15）
+				addrLen := binary.BigEndian.Uint16(buf[14:16])
+				totalHeaderLen := 16 + int(addrLen)
+
+				fmt.Printf("地址长度: %d, 总头部长度: %d\n", addrLen, totalHeaderLen)
+
+				// 读取完整的头部
+				header := make([]byte, totalHeaderLen)
+				copy(header, buf[:n])
+
+				// 读取剩余部分
+				for n < totalHeaderLen {
+					readMore, err := conn.Read(header[n:totalHeaderLen])
+					if err != nil {
+						fmt.Printf("读取代理协议头错误: %v\n", err)
+						return conn.RemoteAddr().String(), true, header[:n]
+					}
+					n += readMore
+				}
+
+				// 解析真实IP
+				realIP := parseProxyHeader(header)
+				if realIP != "" {
+					fmt.Printf("✅ 成功解析真实IP: %s\n", realIP)
+					return realIP, true, nil
+				}
+			}
+
+			return conn.RemoteAddr().String(), true, nil
+		} else {
+			fmt.Println("❌ 不是代理协议签名")
+			// 不是代理协议，返回已读取的数据
+			return conn.RemoteAddr().String(), false, buf[:n]
+		}
 	}
 
-	// 不是代理协议
-	return conn.RemoteAddr().String(), false, buffer[:n]
+	// 数据不足12字节
+	return conn.RemoteAddr().String(), false, buf[:n]
 }
 
+// parseProxyHeader 解析代理协议头
 func parseProxyHeader(data []byte) string {
 	if len(data) < 16 {
 		return ""
 	}
 
+	// 检查版本/命令（位置12）
+	verCmd := data[12]
+	version := verCmd >> 4
+	command := verCmd & 0x0F
+
+	fmt.Printf("版本: 0x%X, 命令: 0x%X\n", version, command)
+
+	if version != 0x02 {
+		// 不是代理协议v2
+		return ""
+	}
+
+	if command == 0x00 {
+		// LOCAL命令，没有地址信息
+		return ""
+	}
+
+	// 解析地址长度
 	addrLen := binary.BigEndian.Uint16(data[14:16])
+
 	if len(data) < 16+int(addrLen) {
 		return ""
 	}
 
-	addrFamily := data[12] >> 4
-	transport := data[12] & 0x0F
+	// 解析地址族和协议（位置13）
+	addrFamily := data[13] >> 4
+	transport := data[13] & 0x0F
+
+	fmt.Printf("地址族: 0x%X, 传输协议: 0x%X\n", addrFamily, transport)
 
 	addrData := data[16 : 16+addrLen]
 
 	if addrFamily == 0x01 && transport == 0x01 && addrLen >= 12 {
-		// TCP IPv4
+		// TCP over IPv4
+		// 注意：AWS NLB 发送的格式是：源IP、目标IP、源端口、目标端口
+		// 源IP: 0-3字节，目标IP: 4-7字节，源端口: 8-9字节，目标端口: 10-11字节
 		srcIP := net.IPv4(addrData[0], addrData[1], addrData[2], addrData[3])
 		srcPort := binary.BigEndian.Uint16(addrData[8:10])
+		dstIP := net.IPv4(addrData[4], addrData[5], addrData[6], addrData[7])
+		dstPort := binary.BigEndian.Uint16(addrData[10:12])
 
 		fmt.Printf("  源IP: %s:%d\n", srcIP, srcPort)
-		fmt.Printf("  目标IP: %d.%d.%d.%d:%d\n",
-			addrData[4], addrData[5], addrData[6], addrData[7],
-			binary.BigEndian.Uint16(addrData[10:12]))
+		fmt.Printf("  目标IP: %s:%d\n", dstIP, dstPort)
 
-		return srcIP.String()
+		return fmt.Sprintf("%s:%d", srcIP, srcPort)
+	}
+
+	if addrFamily == 0x02 && transport == 0x01 && addrLen >= 36 {
+		// TCP over IPv6
+		srcIP := net.IP(addrData[0:16])
+		srcPort := binary.BigEndian.Uint16(addrData[32:34])
+
+		fmt.Printf("  源IP: [%s]:%d\n", srcIP, srcPort)
+
+		return fmt.Sprintf("%s:%d", srcIP, srcPort)
 	}
 
 	return ""
+}
+
+// extractIP 提取纯IP（去掉端口）
+func extractIP(addr string) string {
+	// 如果包含冒号，尝试分割IP和端口
+	if idx := strings.LastIndex(addr, ":"); idx != -1 {
+		possibleIP := addr[:idx]
+		// 检查是否为合法IP
+		if ip := net.ParseIP(possibleIP); ip != nil {
+			return ip.String()
+		}
+	}
+
+	// 如果本身是IP，直接返回
+	if ip := net.ParseIP(addr); ip != nil {
+		return ip.String()
+	}
+
+	return addr
 }
