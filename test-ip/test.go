@@ -1,7 +1,8 @@
-// tcp_realip_server_fixed.go
+// fixed_proxy_server.go
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -18,9 +19,8 @@ func main() {
 	}
 	defer listener.Close()
 
-	log.Println("TCP真实IP测试服务器启动，端口: 23334")
-	log.Println("支持代理协议 v2")
-	log.Println("=================================")
+	log.Println("TCP代理协议测试服务器启动:23334")
+	log.Println("等待连接...")
 
 	for {
 		conn, err := listener.Accept()
@@ -29,209 +29,151 @@ func main() {
 			continue
 		}
 
-		go handleClient(conn)
+		go handleConnection(conn)
 	}
 }
 
-func handleClient(conn net.Conn) {
+func handleConnection(conn net.Conn) {
 	defer func() {
 		conn.Close()
-		fmt.Printf("连接关闭: %s\n", conn.RemoteAddr())
+		fmt.Printf("连接关闭: %s\n\n", conn.RemoteAddr())
 	}()
 
-	// 记录连接时间
-	startTime := time.Now()
+	// 不设置超时，等待代理协议头
+	realIP, isProxy, remainingData := detectProxyProtocol(conn)
 
-	// 1. 解析代理协议
-	realIP, isProxy := parseProxyProtocolWithTimeout(conn, 2*time.Second)
-	remoteAddr := conn.RemoteAddr().String()
-
-	// 提取IP（去掉端口）
-	displayIP := extractIP(realIP)
-
-	// 打印连接信息
 	fmt.Printf("\n" + strings.Repeat("=", 60) + "\n")
 	fmt.Printf("📡 新连接建立\n")
-	fmt.Printf("   连接地址: %s\n", remoteAddr)
-	fmt.Printf("   真实IP:   %s\n", displayIP)
+	fmt.Printf("   连接地址: %s\n", conn.RemoteAddr())
+	fmt.Printf("   真实IP:   %s\n", realIP)
 	fmt.Printf("   代理协议: %v\n", isProxy)
-	fmt.Printf("   连接时间: %s\n", startTime.Format("2006-01-02 15:04:05"))
+	fmt.Printf("   剩余数据: %d 字节\n", len(remainingData))
+
+	if len(remainingData) > 0 {
+		fmt.Printf("   剩余数据(hex): %x\n", remainingData)
+	}
 	fmt.Printf(strings.Repeat("-", 60) + "\n")
 
+	// 如果有剩余数据，先处理
+	if len(remainingData) > 0 {
+		fmt.Printf("处理剩余数据: %q\n", string(remainingData))
+		conn.Write([]byte(fmt.Sprintf("收到缓冲数据: %q\n", string(remainingData))))
+	}
+
 	// 发送欢迎消息
-	welcomeMsg := fmt.Sprintf(
-		"TCP真实IP测试服务器\n"+
-			"连接地址: %s\n"+
-			"真实IP: %s\n"+
-			"代理协议: %v\n\n",
-		remoteAddr, displayIP, isProxy)
-	conn.Write([]byte(welcomeMsg))
+	welcome := fmt.Sprintf("欢迎! 真实IP: %s, 代理协议: %v\n", realIP, isProxy)
+	conn.Write([]byte(welcome))
 
-	// 2. 循环接收数据
-	buffer := make([]byte, 4096)
+	// 循环读取数据
+	buf := make([]byte, 1024)
 	for {
-		// 设置读取超时
-		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-
-		n, err := conn.Read(buffer)
+		n, err := conn.Read(buf)
 		if err != nil {
 			if err == io.EOF {
-				fmt.Printf("客户端主动断开: %s\n", displayIP)
-			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				fmt.Printf("读取超时: %s\n", displayIP)
+				fmt.Printf("客户端断开: %s\n", realIP)
 			} else {
-				fmt.Printf("读取错误 %s: %v\n", displayIP, err)
+				fmt.Printf("读取错误: %v\n", err)
 			}
 			break
 		}
 
 		if n > 0 {
-			data := buffer[:n]
-			processData(conn, displayIP, data)
+			data := buf[:n]
+			fmt.Printf("收到数据[%s]: %q (hex: %x)\n", realIP, string(data), data)
+			conn.Write([]byte(fmt.Sprintf("回显: %s", data)))
 		}
 	}
-
-	// 3. 连接关闭统计
-	duration := time.Since(startTime)
-	fmt.Printf(strings.Repeat("-", 60) + "\n")
-	fmt.Printf("🔌 连接关闭\n")
-	fmt.Printf("   真实IP: %s\n", displayIP)
-	fmt.Printf("   连接时长: %v\n", duration)
-	fmt.Printf(strings.Repeat("=", 60) + "\n\n")
 }
 
-func processData(conn net.Conn, displayIP string, data []byte) {
-	// 处理消息
-	msg := strings.TrimSpace(string(data))
-
-	// 打印日志
-	fmt.Printf("📥 收到数据\n")
-	fmt.Printf("   真实IP: %s\n", displayIP)
-	fmt.Printf("   数据长度: %d 字节\n", len(data))
-	fmt.Printf("   内容: %q\n", msg)
-
-	if len(data) <= 20 {
-		fmt.Printf("   十六进制: %x\n", data)
-	}
-	fmt.Printf(strings.Repeat("-", 30) + "\n")
-
-	// 处理特殊命令
-	if msg == "exit" || msg == "quit" {
-		conn.Write([]byte("Goodbye!\n"))
-		conn.Close()
-		return
-	}
-
-	// 简单回显
-	conn.Write([]byte(fmt.Sprintf("Echo: %s\n", msg)))
-}
-
-// 提取IP（去掉端口）
-func extractIP(addr string) string {
-	// 如果包含冒号，尝试分割IP和端口
-	if idx := strings.LastIndex(addr, ":"); idx != -1 {
-		possibleIP := addr[:idx]
-		// 简单检查是否为IP地址
-		if net.ParseIP(possibleIP) != nil {
-			return possibleIP
-		}
-	}
-	return addr
-}
-
-// 带超时的代理协议解析
-func parseProxyProtocolWithTimeout(conn net.Conn, timeout time.Duration) (string, bool) {
-	// 设置读取超时
-	conn.SetReadDeadline(time.Now().Add(timeout))
-	defer conn.SetReadDeadline(time.Time{}) // 清除超时
-
-	return parseProxyProtocol(conn)
-}
-
-// 解析代理协议
-func parseProxyProtocol(conn net.Conn) (string, bool) {
+// 检测代理协议 - 关键修复版本
+func detectProxyProtocol(conn net.Conn) (realIP string, isProxy bool, remainingData []byte) {
 	// 代理协议v2签名
-	signature := []byte{0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A}
+	proxySignature := []byte{0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A}
 
-	// 尝试读取签名
-	buf := make([]byte, 12)
-	n, err := conn.Read(buf)
-	if err != nil {
-		// 读取错误，返回连接地址
-		return conn.RemoteAddr().String(), false
-	}
+	// 重要：使用 Peek 的方式读取，而不是直接 Read
+	// 因为我们需要先检查数据，但不一定消费
 
-	// 如果读取的数据少于12字节，可能不是代理协议
-	if n < 12 {
-		// 保存已读取的数据（供后续处理）
+	// 方法1：先读取少量数据检查
+	buffer := make([]byte, 16) // 先读16字节
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := conn.Read(buffer)
+	conn.SetReadDeadline(time.Time{}) // 清除超时
+
+	if err != nil || n < 12 {
+		// 读取失败或数据不足
 		if n > 0 {
-			// 这里简化处理：忽略缓冲数据
+			return conn.RemoteAddr().String(), false, buffer[:n]
 		}
-		return conn.RemoteAddr().String(), false
+		return conn.RemoteAddr().String(), false, nil
 	}
 
-	// 检查签名
-	isProxyV2 := true
-	for i := 0; i < 12; i++ {
-		if buf[i] != signature[i] {
-			isProxyV2 = false
-			break
-		}
-	}
+	// 检查是否是代理协议
+	if n >= 12 && bytes.Equal(buffer[:12], proxySignature) {
+		fmt.Println("✅ 检测到代理协议签名!")
 
-	if !isProxyV2 {
-		// 不是代理协议
-		return conn.RemoteAddr().String(), false
-	}
+		// 继续读取完整头部
+		// 头部总长度 = 12(签名) + 2(版本命令) + 2(地址长度) + 地址数据
 
-	// 读取版本和命令
-	verCmd := make([]byte, 2)
-	if _, err := conn.Read(verCmd); err != nil {
-		return conn.RemoteAddr().String(), false
-	}
+		// 如果已经读取了16字节，还需要解析地址长度
+		if n >= 16 {
+			addrLen := binary.BigEndian.Uint16(buffer[14:16])
+			totalHeaderLen := 16 + int(addrLen)
 
-	// 读取地址信息
-	addrInfo := make([]byte, 3)
-	if _, err := conn.Read(addrInfo); err != nil {
-		return conn.RemoteAddr().String(), false
-	}
+			// 读取剩余头部数据
+			headerData := make([]byte, totalHeaderLen)
+			copy(headerData[:n], buffer[:n])
 
-	// 解析地址长度
-	addrLen := binary.BigEndian.Uint16(addrInfo[1:3])
+			// 读取剩余部分
+			for n < totalHeaderLen {
+				readMore, err := conn.Read(headerData[n:totalHeaderLen])
+				if err != nil {
+					fmt.Printf("读取代理协议头错误: %v\n", err)
+					return conn.RemoteAddr().String(), true, nil
+				}
+				n += readMore
+			}
 
-	// 读取地址数据
-	if addrLen > 0 {
-		addrData := make([]byte, addrLen)
-		if _, err := conn.Read(addrData); err != nil {
-			return conn.RemoteAddr().String(), false
+			// 解析真实IP
+			realIP := parseProxyHeader(headerData)
+			if realIP != "" {
+				return realIP, true, nil
+			}
 		}
 
-		// 解析地址族和协议
-		addrFamily := addrInfo[0] >> 4
-		transport := addrInfo[0] & 0x0F
-
-		if addrFamily == 0x01 && transport == 0x01 && addrLen >= 12 {
-			// TCP over IPv4
-			srcIP := net.IPv4(addrData[0], addrData[1], addrData[2], addrData[3])
-			srcPort := binary.BigEndian.Uint16(addrData[8:10])
-
-			fmt.Printf("🔍 代理协议解析成功:\n")
-			fmt.Printf("   源IP: %s:%d\n", srcIP, srcPort)
-
-			return fmt.Sprintf("%s:%d", srcIP, srcPort), true
-		}
-
-		if addrFamily == 0x02 && transport == 0x01 && addrLen >= 36 {
-			// TCP over IPv6
-			srcIP := net.IP(addrData[0:16])
-			srcPort := binary.BigEndian.Uint16(addrData[32:34])
-
-			fmt.Printf("🔍 代理协议解析成功 (IPv6):\n")
-			fmt.Printf("   源IP: [%s]:%d\n", srcIP, srcPort)
-
-			return fmt.Sprintf("%s:%d", srcIP, srcPort), true
-		}
+		return conn.RemoteAddr().String(), true, nil
 	}
 
-	return conn.RemoteAddr().String(), true
+	// 不是代理协议
+	return conn.RemoteAddr().String(), false, buffer[:n]
+}
+
+func parseProxyHeader(data []byte) string {
+	if len(data) < 16 {
+		return ""
+	}
+
+	addrLen := binary.BigEndian.Uint16(data[14:16])
+	if len(data) < 16+int(addrLen) {
+		return ""
+	}
+
+	addrFamily := data[12] >> 4
+	transport := data[12] & 0x0F
+
+	addrData := data[16 : 16+addrLen]
+
+	if addrFamily == 0x01 && transport == 0x01 && addrLen >= 12 {
+		// TCP IPv4
+		srcIP := net.IPv4(addrData[0], addrData[1], addrData[2], addrData[3])
+		srcPort := binary.BigEndian.Uint16(addrData[8:10])
+
+		fmt.Printf("  源IP: %s:%d\n", srcIP, srcPort)
+		fmt.Printf("  目标IP: %d.%d.%d.%d:%d\n",
+			addrData[4], addrData[5], addrData[6], addrData[7],
+			binary.BigEndian.Uint16(addrData[10:12]))
+
+		return srcIP.String()
+	}
+
+	return ""
 }
