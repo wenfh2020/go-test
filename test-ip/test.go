@@ -12,13 +12,13 @@ import (
 )
 
 func main() {
-	listener, err := net.Listen("tcp", ":23334")
+	listener, err := net.Listen("tcp", ":32623")
 	if err != nil {
 		log.Fatal("监听失败:", err)
 	}
 	defer listener.Close()
 
-	log.Println("TCP代理协议测试服务器启动:23334")
+	log.Println("TCP代理协议测试服务器启动:32623")
 	log.Println("等待连接...")
 
 	for {
