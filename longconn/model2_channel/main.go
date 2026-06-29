@@ -51,12 +51,33 @@ type Conn struct {
 
 // close 关闭连接：只关 done（永不关 send），所以任何 goroutine 的 Push 都不会
 // "向已关闭 channel 发送"而 panic。sync.Once 保证幂等。
+//
+// 关于「谁能关 channel」：Go 语言层面没有「谁创建谁才能关」的限制，任何持有引用的
+// 协程都能 close()。runtime 只兜两条硬规则，违反即 panic：重复关闭、关 nil channel
+// （外加「向已关闭 channel 发送」也 panic，接收则永远安全）。社区惯例「由唯一发送方
+// 关闭」是为避免别的发送者撞上「向已关闭 channel 发送」，针对的是发送方而非创建方。
+// 本文件 done 由 readPump / Push 背压等多个协程关闭——之所以安全，是因为：
+//   - done 是「只关、从不发送」的纯信号 channel，多关闭者唯一的风险只是重复关，
+//     用 sync.Once 兜住即可彻底安全；
+//   - 真正有多个并发发送者(Push)的 send 反而永不 close，靠 done 广播 + drain 取干，
+//     连接对象整体被 GC 回收——从设计上消解掉「多发送者不能关」的约束。
 func (c *Conn) close() {
 	c.closeOnce.Do(func() { close(c.done) })
 }
 
 // Push 非阻塞投递：投进队列就返回；队列满 = 客户端太慢 → 背压踢掉。
 // 任意业务 goroutine 都能调用，它们只管投递、从不直接写 ws。
+//
+// 这里的 select 是「带 default 的非阻塞」形态，三件套 send/done/default：
+//   - 绝不 panic：close() 只关 done、永不关 send；向已关闭 channel「接收」安全，
+//     只有「发送」才 panic，所以并发 Push 永远不会炸。
+//   - 绝不阻塞：done 关闭后 <-c.done 永远就绪，select 立刻返回，不卡业务协程。
+//   - 返回值不确定（关键）：当 send 还有缓冲位、done 又已关闭时，前两个 case 同时
+//     就绪 → Go 在就绪 case 中「伪随机均匀选一个」（case 顺序≠优先级），所以
+//     close(done) 后的 Push 可能仍 enqueue 返回 true，也可能返回 false。
+//     即 close(done) 并不保证后续 Push 立刻全部停投——这是尽力而为的关闭语义。
+//   - default 只在「所有 case 都不就绪」时才走；done 一旦关闭就永远就绪，故连接关闭
+//     后背压分支不再触发。想要「关闭严格优先」得手写两段 select 先短路 done。
 func (c *Conn) Push(data []byte) bool {
 	select {
 	case c.send <- data: // 有缓冲位，投递成功
@@ -71,6 +92,12 @@ func (c *Conn) Push(data []byte) bool {
 }
 
 // readPump 每连接唯一的读 goroutine：只读，把要回的内容丢进队列，不直接写。
+//
+// 注意分层：下面 ReadMessage 没数据时，goroutine 并不真的占线程阻塞 read，而是被
+// Go runtime 挂到 netpoller 上——Linux 下 netpoller 就是 epoll。成千上万条连接的
+// 「socket 可读」由这一个 epoll 实例统一管理，来数据才唤醒对应 readPump。所以 Go 里
+// 真正对应 Linux select/epoll 的是这层透明的 netpoller，而不是 select 关键字；
+// select 关键字是再上一层、在 channel 之间做多路复用（见 writePump）。
 func (c *Conn) readPump(m *ClientManager) {
 	defer func() {
 		c.close()      // 读出错/对端关闭 → 通知 writePump 收摊
@@ -89,6 +116,13 @@ func (c *Conn) readPump(m *ClientManager) {
 }
 
 // writePump 每连接唯一的写 goroutine：本连接唯一 writer，无需锁；顺带统一发心跳。
+//
+// 这里的 select 是「无 default 的阻塞多路事件循环」：一个协程同时等「有消息要发 /
+// 该发心跳 / 连接要收摊」三件事，谁先就绪处理谁；都不就绪就让出 CPU、挂在这几个
+// channel 上睡着（不忙轮询）。<-c.done 用「关闭 channel」做一对多广播退出——关闭的
+// channel 永远可读，任何监听它的 select 都会被唤醒。注意 send 与 done 同时就绪时
+// 仍是随机选；命中 done 后不直接退，而是先 drain 把队列里残余消息尽量发完再走，
+// 不丢弃已投递的数据（对应 msggateway 的 loopSend：收到 done 后 drain 残余再退出）。
 func (c *Conn) writePump() {
 	tick := time.NewTicker(pingInterval)
 	defer func() {
@@ -99,11 +133,7 @@ func (c *Conn) writePump() {
 	for {
 		select {
 		case data := <-c.send:
-			if c.slow {
-				time.Sleep(40 * time.Millisecond) // demo：模拟慢客户端，写得很慢
-			}
-			c.ws.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := c.ws.WriteMessage(websocket.TextMessage, data); err != nil {
+			if err := c.writeText(data); err != nil {
 				return
 			}
 		case <-tick.C:
@@ -112,7 +142,44 @@ func (c *Conn) writePump() {
 				return
 			}
 		case <-c.done:
-			return // 连接已被关闭（读出错 / 被背压踢掉）
+			// 连接已被关闭（读出错 / 被背压踢掉）：退出前把队列里残余、已投递但
+			// 还没写出的消息尽量发完，不直接丢弃。
+			c.drain()
+			return
+		}
+	}
+}
+
+// rawWrite 真正把一条业务消息落地，不含任何 demo 模拟。
+func (c *Conn) rawWrite(data []byte) error {
+	c.ws.SetWriteDeadline(time.Now().Add(writeWait))
+	return c.ws.WriteMessage(websocket.TextMessage, data)
+}
+
+// writeText 正常写循环用：在 rawWrite 之上叠加 slow demo 的慢写，模拟慢客户端。
+// 注意 drain 不走这里、而是直接 rawWrite——关闭时只想尽快冲刷残余，不该再吃慢写延迟。
+func (c *Conn) writeText(data []byte) error {
+	if c.slow {
+		time.Sleep(40 * time.Millisecond) // demo：仅正常写循环里模拟慢客户端
+	}
+	return c.rawWrite(data)
+}
+
+// drain 在连接关闭后，非阻塞地把 send 队列里残余的消息尽量发完再退出。
+// send 永不被 close（只关 done），所以这里用 select-default 取干为止：
+// 取到就写，取不到（队列空）就立即返回，绝不阻塞。
+// 用 rawWrite 而非 writeText：被背压踢掉的恰恰是 slow 连接，关闭时若再吃 40ms/条的
+// 慢写延迟，等于「刚因为它慢把它踢了，又慢吞吞往它灌」，自相矛盾且拖长 teardown。
+func (c *Conn) drain() {
+	for {
+		select {
+		case data := <-c.send:
+			if err := c.rawWrite(data); err != nil {
+				return
+			}
+		default:
+			log.Printf("[server] conn %s drained, writePump closing", c.id)
+			return
 		}
 	}
 }
