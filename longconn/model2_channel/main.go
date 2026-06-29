@@ -109,9 +109,16 @@ func (c *Conn) readPump(m *ClientManager) {
 		if err != nil {
 			return
 		}
-		if string(msg) == "ping" {
-			c.Push([]byte("pong")) // 读协程也只投递，不直接写
-		}
+		c.handleMessage(msg)
+	}
+}
+
+// handleMessage 处理一条读到的业务消息：解析 + 决定回什么。
+// 关键约束——读协程只「投递」、从不直接写 ws，回包统一走 Push 进 send 队列，
+// 由唯一的 writePump 串行落地，保持「单 writer 无锁」的模型不被破坏。
+func (c *Conn) handleMessage(msg []byte) {
+	if string(msg) == "ping" {
+		c.Push([]byte("pong"))
 	}
 }
 

@@ -36,10 +36,8 @@ type Conn struct {
 func (c *Conn) Write(data []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // 开闹钟：本次写限时 5 秒
-	err := c.ws.WriteMessage(websocket.TextMessage, data)
-	c.ws.SetWriteDeadline(time.Time{}) // 关闹钟：写完复位，避免过期 deadline 残留
-	return err
+	c.ws.SetWriteDeadline(time.Now().Add(5 * time.Second)) // 本次写限时 5 秒；每次写都重设，无需复位
+	return c.ws.WriteMessage(websocket.TextMessage, data)
 }
 
 // readLoop 每连接唯一的读 goroutine：阻塞 Read，收到 ping 就加锁回 pong。
