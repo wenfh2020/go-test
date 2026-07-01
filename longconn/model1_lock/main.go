@@ -52,9 +52,16 @@ func (c *Conn) readLoop(m *ClientManager) {
 		if err != nil {
 			return
 		}
-		if string(msg) == "ping" {
-			_ = c.Write([]byte("pong")) // 读协程里也走加锁写
-		}
+		c.handleMessage(msg)
+	}
+}
+
+// handleMessage 处理一条读到的业务消息：解析 + 决定回什么。
+// 和模型二不同——这里读协程直接加锁回写 ws（走 Write），不经中转队列，
+// 写并发安全全靠每连接那把 sync.Mutex 串行化。
+func (c *Conn) handleMessage(msg []byte) {
+	if string(msg) == "ping" {
+		_ = c.Write([]byte("pong")) // 读协程里也走加锁写
 	}
 }
 
